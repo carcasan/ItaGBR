@@ -1,0 +1,687 @@
+---
+title: "New_ITA_paper"
+author: "Carolina Castro-Sanguino"
+date: "13/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(root.dir= '/tmp',echo = TRUE)
+
+##Need renv package 
+#renv::init() ##Creates private library
+
+rm(list=ls())
+
+library(rgdal)
+library(rgeos)
+library(raster)
+library(magrittr)
+library(dplyr)
+library(maps)
+library(lubridate)
+library(ggcorrplot)
+library(FSSgam)
+library(mgcv)
+library(ggsn)
+library(ape)
+library(ggpubr)
+library(stringr)
+library(viridis)
+library(tidyr)
+library(gplots)
+library(egg)
+
+##The final dataset for modelling: AIMS and Catlin merged with cyclone descriptors and other metrics
+load("C:/Users/uqccastr/Dropbox/2021/ITA/Rfiles/ita_ndf_Edited_forpaper.Rdata")
+
+##Ita track from BOM for plotting
+track<-read.csv("C:/Users/uqccastr/Dropbox/2021/ITA/Database/Ita_track_BOM.csv")
+
+##All cyclone Descriptors (with those excluded for Appendix)
+wavedata<-read.csv("C:/Users/uqccastr/Dropbox/2021/ITA/Database/wavedata.csv")
+
+```
+
+
+
+# Explore wave data
+
+```{r}
+
+
+##----------------------------------
+##Figure 2: correlated wave metrics
+##----------------------------------
+wavedata%<>%filter(stid %in% ita_ndf$stid)##Only for selected reefs
+
+p1=ggscatter(wavedata, x = "whmax", y = "wp90",
+             conf.int = TRUE,
+             cor.coef = TRUE, cor.method = "spearman",color="cornflowerblue",
+             xlab = "Max.wave Height (m)", ylab = "Energy flux (Wf)\n90th percentile")+ geom_smooth(color="black")#add = "reg.line",
+#
+#
+p2=ggscatter(wavedata, x = "whmax", y = "wpc",
+             conf.int = TRUE,
+             cor.coef = TRUE, cor.method = "spearman",color="cornflowerblue", font.label = c(12),
+             xlab = "Max.wave Height (m)", ylab = "Cumulative Energy\nflux (kW/m)")+ geom_smooth(color="black")##add = "reg.line",
+#
+#
+p3=ggscatter(wavedata, x = "wh4mH", y = "wpc",
+             conf.int = TRUE,
+             cor.coef = TRUE, cor.method = "spearman", color="cornflowerblue",
+             xlab = "Wave height\nthreshold (4MW)", ylab = "Cumulative Energy\nflux (kW/m)")+ geom_smooth(color="black")##add = "reg.line",
+
+p4=ggscatter(wavedata, x = "wh4mH", y = "Ubms",
+             conf.int = TRUE,
+             cor.coef = TRUE, cor.method = "spearman", color="cornflowerblue",
+             xlab = "Wave height\nthreshold (4MW)", ylab = "Max. near-bed\norbital velocity amplitud")+ geom_smooth(color="black")##add = "reg.line",
+
+
+ggarrange (p1,p2,p3,p4, ncol=2)
+#ggsave(file="Outputs/Wavecorr.png",width=7, height=6,dpi=300)### )
+
+##-----------------------------------------------------------------------------------
+##Transform all potential variables, check correlations and then subset for modelling
+##-----------------------------------------------------------------------------------
+ita_ndf%<>%left_join(unique(df.1[c(4,5,7)]))#Add coordinates per transect
+
+##Check predictors distributions and transform/center (always transform first, and then center or standardize if needed)
+contpreds=names(ita_ndf[-c(1:3)])
+
+# for(p in 1:length(contpreds)){
+# par(mfrow=c(1,2))
+#  hist(ita_ndf[,(contpreds[p])],main=contpreds[p])
+#  plot(jitter(ita_ndf[,contpreds[p]]))
+#  }
+
+##LOG: wpc,whmax,4mwh,wpmax,ubms,Th1)
+##sqrt: Acropora
+##sqrt: Obranching
+
+##Transform to normalise
+
+ita_ndf %<>%
+  mutate(log.wpc=log(wp.c+1),
+         log.4mwh=log(wh.4mH+1),
+         log.ubms=log(Ubms+1),
+         log.whmax=log(wh.max+1),
+         log.T1h=log(T1h+1), 
+         log.wpmax=log(wp.max+1),
+         sqrt.Acropora=sqrt(Acropora),
+         sqrt.Otherbranching=sqrt(Otherbranching),
+         sqrt.change=sqrt(Rchange+1),
+         log.postIta=log(postIta),
+         sqrt.mwind=sqrt(Max_wind),
+         ndist=log(distance))
+
+
+
+newdat=ita_ndf[,c("Rchange","sqrt.change","reef_name","stid","nc_ubedmean","sqrt.Acropora",
+                  "log.T1h","log.ubms","log.wpmax", "log.wpc","log.4mwh","log.whmax","log.postIta", "sqrt.mwind", "ndist")]
+
+#Edit names for figure
+newdat%<>%dplyr::rename("nc-Ub"="nc_ubedmean",`% Acropora`= "sqrt.Acropora","Ub-T1h"="log.T1h","Ita-Ub"="log.ubms",`Wf max`="log.wpmax","Wfc"="log.wpc",`4mWh`="log.4mwh","Whmax"="log.whmax",`time post-Ita`="log.postIta",`Wind max`="sqrt.mwind","mindist"="ndist")
+
+cpreds=names(newdat[-c(1:4)])
+
+##Correlate transformed variables (reduced correlation coeff but still need to test independently)
+corpred<-round(cor(newdat[,cpreds],use="complete.obs"),2)
+
+##-------------------
+##Appendix Figure 1
+##-------------------
+ggcorrplot(corpred, hc.order = TRUE, type = "lower",lab = TRUE)
+#ggsave("Outputs/Correlation_Transformed_FinalPreds.jpeg", device="jpeg",width = 9, height = 6, units = c("in"),dpi = 300)
+
+
+##Functions to Backtransform response/predictors
+square <- function(x){
+  return((x**2)-1)
+}
+
+loginv <- function(x){
+  return(exp(x)-1)
+}
+
+
+```
+
+#Explore best preditors with FSSGAMS
+1. Include all predictors and only a metric of %Acroporids
+In the presence of community composition measures of orbital velocity are best explaining variability. 
+
+```{r}
+
+##Exclude highly correlated predictors (i.e >0.90 cor)
+##wpcum is the least correlated of all--choose and compare RelImp against wh metrics
+##remove T1h as highly correlated with log.Ub (which show greater correlation to response)
+
+##NOTE:### Models with excluded variables show they are not important
+##test of cumulative wp (RI=0.07)
+##test of max wh (RI=0.009)
+##test of 4mwh (RI=0.009)
+
+contpreds1=names(ita_ndf[,c("nc_ubedmean","sqrt.Acropora","log.ubms","log.wpc","log.postIta","ndist")])## for modelling
+#contpreds1=names(ita_ndf[,c("nc_ubedmean","sqrt.Acropora","log.ubms","log.4mwh","log.postIta","ndist")])## check 4mwh: Not in best model
+
+
+##Make sure there are at least 2 replicates per reef
+countdat=ita_ndf%>%dplyr::select(reef_name,stid)%>%group_by(reef_name)%>%count()
+summary(countdat$n)#OK
+
+
+ita_ndf%<>%
+  mutate_if(is.character,as.factor)
+
+usedat=ita_ndf[,c("sqrt.change","reef_name","nc_ubedmean","sqrt.Acropora","log.ubms","log.wpc","log.postIta","ndist")]
+#usedat=ita_ndf[,c("sqrt.change","reef_name","nc_ubedmean","sqrt.Acropora","log.ubms","log.4mwh","log.postIta","ndist")]
+
+##is including Acropora important? (model without Acropora)
+#usedat=usedat[,c("sqrt.change","reef_name","nc_ubedmean","log.ubms","log.wpc","log.postIta","ndist")]
+#contpreds1=names(usedat2[,c("nc_ubedmean","log.ubms","log.wpc","log.postIta","ndist")])#
+
+
+Mod1=gam(sqrt.change~s(ndist,k=3)+s(reef_name,bs='re'),data=usedat)##Update per model
+
+model.set=generate.model.set(use.dat=usedat,
+                             max.predictors=3, 
+                             test.fit=Mod1, 
+                             k=3, 
+                             pred.vars.cont=contpreds1,##Update for each model
+                             smooth.smooth.interactions=T,
+                             cov.cutoff=0.28, 
+                             null.terms="s(reef_name,bs='re')")
+
+mod.list=fit.model.set(model.set)## FITS mod
+##extract Variable Importance Scores
+var.imp.aic=mod.list$variable.importance$aic$variable.weights.raw
+
+# Model selection table and best models
+mod.table=mod.list$mod.data.out
+mod.table=mod.table[order(mod.table$AICc),]
+less.2AICc=mod.table[which(mod.table$delta.AICc<2),]
+
+
+View(less.2AICc)
+
+relimp.aic=as.data.frame(var.imp.aic)
+relimp.aic$predictor <- rownames(relimp.aic)
+rownames(relimp.aic)=relimp.aic$predictor
+
+#edit for graph
+relimp.aic$predictor=c("nc-Ub", "%Acropora","Ita-Ub","Ita-Wf","Time post-Ita","min.dist")
+
+##Fit best MOdel
+less.2AICc$formula[1]##
+
+mod=gam(sqrt.change~te(sqrt.Acropora,log.ubms, k = 3, bs = c("cr", "cr"))+s(reef_name, bs = "re"), data=usedat,method="REML")##Gaussian OK
+summary(mod)#47%
+
+
+modfit=gratia::appraise(mod)##USE for supplementary
+dev.new()
+#ggsave("Outputs/BestMod_fit_Tot_rnd.jpeg", modfit,device="jpeg",width = 9, height = 6, units = c("in"),dpi = 300) 
+
+
+##-----------------------------------------------------------------
+##Plot observed total cover change as a function of best predictors
+##-----------------------------------------------------------------
+##Categorize %Acropora for easier visualization of interaction
+classorder=c("<15%","15-35%",">35%")
+
+
+usedat%<>%mutate(Acropora=NA)%>%
+  mutate(Acropora=ifelse(sqrt.Acropora**2 <15, "<15%",
+                         ifelse(sqrt.Acropora**2  >=15 & sqrt.Acropora**2 <35.1, "15-35%",">35%")))%>%
+  mutate(Acropora=factor(Acropora, levels=classorder))
+
+#----------
+##Figure 4
+#----------
+
+f1=ggplot(relimp.aic, aes(y=reorder(predictor, -var.imp.aic,sum),var.imp.aic))+geom_col(aes(color=reorder(predictor, -var.imp.aic,sum), fill=reorder(predictor, -var.imp.aic,sum)), alpha=0.4)+scale_colour_hue(h = c(180, 270))+scale_fill_hue(h = c(180, 270))+theme_classic()+theme(legend.position = "none")+ylab("Predictors")+xlab("Relative Importance-AIC")
+# ggsave("Outputs/RI_Total.jpeg",device="jpeg",width = 3, height = 4, units = c("in"),dpi = 300)
+
+##Observed data as a fuction of modelled predictors (mod withouth random)
+f2=ggplot(usedat, aes(x=log.ubms, y=square(sqrt.change),color=Acropora), size=Acropora)+geom_point(aes(x=log.ubms, y=square(sqrt.change),color=Acropora,size=Acropora), alpha=0.4)+viridis::scale_color_viridis(discrete = TRUE, option = "D")+viridis::scale_fill_viridis(discrete = TRUE)+ylab("Relative change\nin total coral cover")+theme_classic()+xlab("Log Ita-Ub (m/s)")+geom_smooth(aes(color=Acropora,fill=Acropora), method="gam", formula = y~s(x, k=3, bs="cr"))
+#ggsave("Outputs/Edited_observed_totalRchange.jpeg",device="jpeg",width = 5, height = 4, units = c("in"),dpi = 300)  
+
+ggarrange(f1,f2, nrow=1, labels=c('a)','b)'))
+
+```
+
+# Explore best Model and the importance of bottom-wave metrics and community composition for total cover  change
+
+```{r}
+
+plot(residuals.gam(mod)~usedat$reef_name)#OK
+
+##check data spatially
+land <- readOGR(dsn="C:/Users/uqccastr/Dropbox/GBRMPA_Data", layer="Great_Barrier_Reef_Features")	
+crs(land)
+spatdat=ita_ndf%>%dplyr::select(c(17,18,3))%>%droplevels()
+sp::coordinates(spatdat)<-~lat+lng##convert to spatial df
+crs(spatdat)<- CRS("+init=epsg:3857") ##
+spatdat2<-spTransform(spatdat, CRS("+init=epsg:32755"))#UTM for estimating spatial autocorrelation
+spatdat2$Res=residuals.gam(mod)
+sp::bubble(spatdat2,"Res")##No strong spatial pattern in residuals OK
+
+##Moran'sI (value of slope of fitted line between neignouring response values and each coord)
+coords=spatdat2@coords
+w=fields:::rdist(coords)
+Moran.I(x=newdat$sqrt.change, w=w)## -1/(N-1) ## Expected value negative and nearly 0.
+##obs close to expected but pvalue=0(reject null of no spatial autocor). 
+##pretty small value -0.09 for residual autocorrelation
+
+#---------
+##Figure 7
+#---------
+##Plot ItaUb vs ncUb
+p1=ggscatter(usedat, x="log.ubms", y="nc_ubedmean", conf.int = TRUE, cor.coef = TRUE)+geom_smooth(method="gam", formula=y~s(x, bs="cr", k=3), color="grey")+ylab("nc-Ub")+xlab("Ita-Ub")+theme(axis.text = element_text(size=8))
+
+##Plot %Acropora along ncUb
+p2=ggplot(usedat, aes(y=nc_ubedmean,x=Acropora, fill=Acropora),color=Acropora)+ylab("nc-Ub")+xlab("Acropora")+geom_violin(alpha=0.7)+viridis::scale_fill_viridis(discrete =TRUE)+theme_classic()+theme(legend.position = "none")+xlab("% Acropora")
+
+ggarrange(p1,p2, nrow=1, labels=c('a)','b)'))
+```
+
+
+2. Run independent models for the change of individual coral groups as a response.
+Inspection of changes per coral groups show that Porites Massive was the only coral group that consistently show losses across all reefs (most coral groups show great variations with mean/median of change suggesting no/+ change in cover)
+
+
+```{r}
+
+##Estimate relative change per Group (Convert each Fg cov to relative cover and calculate change)
+pergroupchange=df.1%>%
+  mutate(Acropora=((ACR_BRA+ACR_TCD)/Total)*100,
+         MSE=((MSE+ACR_OTH)/Total)*100, 
+         BRA_nACR=((BRA_nACR+POCI)/Total)*100,
+         POR_MASS=((POR_MASS/Total)*100))%>%
+  dplyr::select(-c(ACR_BRA,ACR_TCD,POR_TAB,ACR_OTH,POCI,Total))%>%
+  tidyr::gather_(key_col="group", value_col="cover", gather_cols=c("Acropora","BRA_nACR","MSE","POR_MASS"))
+
+
+##Remove sites where Rcover pre-Ita was <5% 
+
+##Acropora
+Achange=pergroupchange%>%
+  filter(group == "Acropora" & year==2012)%>%
+  filter(cover < 5)%>%droplevels()
+summary(Achange)
+
+iddel=levels(as.factor(Achange$stid))
+
+Achange=pergroupchange%>%
+  filter(group %in% c("Acropora"))%>%
+  filter(!stid %in% iddel)%>%
+  tidyr::spread(year,cover)%>%
+  rename(y2012="2012", y2014="2014")%>%
+  mutate(Rchange=(y2014-y2012)/y2012)
+##Make sure there are at least 2 replicates per reef
+Achange%>%dplyr::select(reef_name,stid)%>%group_by(reef_name)%>%count()
+Achange%<>%mutate(transchange=sqrt(Rchange+1))##Transform response
+
+##Other branching(poci and porites)
+OBchange=pergroupchange%>%
+  filter(group %in% c("BRA_nACR"))%>%
+  filter(year==2012 & cover < 5)%>%droplevels()
+
+iddel=levels(as.factor(OBchange$stid))
+
+OBchange=pergroupchange%>%
+  filter(group %in% c("BRA_nACR"))%>%
+  filter(!stid %in% iddel)%>%
+  tidyr::spread(year,cover)%>%
+  rename(y2012="2012", y2014="2014")%>%
+  mutate(Rchange=(y2014-y2012)/y2012)%>%
+  filter(Rchange<4)##Outlier
+##Make sure there are at least 2 replicates per reef
+OBchange%>%dplyr::select(reef_name,stid)%>%group_by(reef_name)%>%count()
+OBchange%<>%mutate(transchange=sqrt(OBchange$Rchange+1))##Transform response
+
+##MSE
+MSEchange=pergroupchange%>%
+  filter(group %in% c("MSE"))%>%
+  filter(year==2012 & cover < 5)%>%droplevels()
+
+iddel=levels(as.factor(MSEchange$stid))
+
+MSEchange=pergroupchange%>%
+  filter(group %in% c("MSE"))%>%
+  filter(!stid %in% iddel)%>%
+  tidyr::spread(year,cover)%>%
+  rename(y2012="2012", y2014="2014")%>%
+  mutate(Rchange=(y2014-y2012)/y2012)%>%
+  filter(Rchange<10)#Outlier
+##Make sure there are at least 2 replicates per reef
+MSEchange%>%dplyr::select(reef_name,stid)%>%group_by(reef_name)%>%count()
+MSEchange%<>%mutate(transchange=log(MSEchange$Rchange+1))##Transform response
+
+##PORMASS (mean change= loss -0.4) This is the only group with mean loss, best for evaluate damage predictors
+PORchange=pergroupchange%>%
+  filter(group %in% c("POR_MASS"))%>%
+  filter(year==2012 & cover < 5)%>%droplevels()
+
+iddel=levels(as.factor(PORchange$stid))
+
+PORchange=pergroupchange%>%
+  filter(group %in% c("POR_MASS"))%>%
+  filter(!stid %in% iddel)%>%
+  tidyr::spread(year,cover)%>%
+  rename(y2012="2012", y2014="2014")%>%
+  mutate(Rchange=(y2014-y2012)/y2012)%>%
+  filter(Rchange<4)#Outlier
+##Make sure there are at least 2 replicates per reef
+PORchange%>%dplyr::select(reef_name,stid)%>%group_by(reef_name)%>%count()
+#Remove Noname and Ribbon 9
+PORchange%<>%filter(!reef_name %in% c("No name", "Ribbon 9"))##Check distribution of changes
+PORchange%<>%mutate(transchange=sqrt(PORchange$Rchange+1))
+
+
+##----------------------------------------------
+##Combine all and include transformed predictors
+##----------------------------------------------
+
+groupchange=rbind(Achange[c(3:8,11:12)],OBchange[c(3:8,11:12)],MSEchange[c(3:8,11:12)],PORchange[c(3:8,11:12)])
+
+groupchange$reef_name<-str_squish(groupchange$reef_name)
+groupchange%<>%left_join(ita_ndf[c(3,4,19:24,28,30)], by="stid")
+
+```
+
+Model per group
+
+```{r}
+
+
+contpreds=names(groupchange[,c("nc_ubedmean","log.ubms","log.wpc","log.postIta","ndist")])
+#contpreds=names(groupchange[,c("nc_ubedmean","log.ubms","log.4mwh","log.postIta","ndist")])##Test just in case (4mWh only relevant for Acropora)
+#contpreds=names(groupchange[,c("nc_ubedmean","log.ubms","log.whmax","log.postIta","ndist")])##Test just in case (whmax ns)
+
+groupdat=groupchange%>%
+  mutate_if(is.character,as.factor)
+
+groupdat=groupdat[,c("group","transchange","reef_name","nc_ubedmean","log.ubms","log.wpc","log.postIta","ndist")]
+#groupdat=groupdat[,c("group","transchange","reef_name","nc_ubedmean","log.ubms","log.4mwh","log.postIta","ndist")] 
+##4mwh only important for Acropora. Explain as much as Ita-Ub. 
+#groupdat=groupdat[,c("group","transchange","reef_name","nc_ubedmean","log.ubms","log.whmax","log.postIta","ndist")]
+
+#Model each coral group
+resp.vars=unique(as.character(groupchange$group))
+
+out.all=list()
+var.imp=list()
+fss.all=list()
+top.all=list()
+
+for(i in 1:length(resp.vars)){
+  use.dat=groupdat[which(groupdat$group==resp.vars[i]),]
+  Mod=gam(transchange~s(ndist,k=3)+s(reef_name,bs='re'),data=use.dat)
+  model.set=generate.model.set(use.dat=use.dat,
+                               test.fit=Mod, 
+                               max.predictors=3, 
+                               k=3, 
+                               pred.vars.cont=contpreds,
+                               smooth.smooth.interactions=T,
+                               cov.cutoff=0.28,
+                               null.terms="s(reef_name,bs='re')") ##compare
+  
+  
+  out.list=fit.model.set(model.set)
+  fss.all=c(fss.all,list(out.list))
+  mod.table=out.list$mod.data.out
+  mod.table=mod.table[order(mod.table$AICc),]
+  out.i=mod.table
+  out.all=c(out.all,list(out.i))
+  var.imp=c(var.imp,list(out.list$variable.importance$aic$variable.weights.raw))
+  all.less.2AICc=mod.table[which(mod.table$delta.AICc<2),]
+  top.all=c(top.all,list(all.less.2AICc))
+  
+}
+
+
+# Model fits and importance---
+resp.vars= c("Acropora","Other Branching","MSE","Porites")
+names(out.all)=resp.vars
+names(var.imp)=resp.vars
+names(top.all)=resp.vars
+names(fss.all)=resp.vars
+
+all.mod.fits=do.call("rbind",out.all)
+all.var.imp.aic=do.call("rbind",var.imp)
+top.mod.fits.aic=do.call("rbind",top.all)
+
+
+##AIC-based BestMods (Table S3)
+top.mod.fits.aic$response=rownames(top.mod.fits.aic)
+top.mod.fits.aic %<>%separate(response, c('response', NA), sep="[(.)]")%>% dplyr::select(response, everything())
+#write.csv(top.mod.fits.aic[,c("modname","AICc","BIC","delta.AICc","delta.BIC","wi.AICc","wi.BIC","edf","r2.vals")],
+#           file="Best_AIC_mods.csv")
+
+
+#---------
+##Figure 5
+#---------
+
+heatmap.2(all.var.imp.aic,notecex=0.3,  dendrogram ="none",
+          col=colorRampPalette(c("white","lightsteelblue1", "cornflowerblue", "slateblue4"))(10),
+          trace="none",key.title = "",keysize=1,
+          notecol="black",key=T,
+          sepcolor = "black",margins=c(12,15), lhei=c(4,15),Rowv=FALSE,Colv=FALSE)
+#ggsave(file="Outputs/Cgroups_RI_AIC_rnd_interactions.jpeg",width = 10, height = 6, units = c("in"),dpi = 300)
+
+
+
+
+##---------------------------------
+##Fit best MOdel (Acropora)
+##---------------------------------
+top.mod.fits.aic$modname[top.mod.fits.aic$response=="Acropora"]
+
+Ac=groupdat%>%filter(group=="Acropora")%>%droplevels()
+
+mod.ac1=gam(transchange~te(nc_ubedmean, ndist, k = 3, bs = c("cr","cr"))+s(reef_name,bs='re'),dat=Ac,method="REML")
+summary(mod.ac1)## 37% rnd model
+
+mod.ac2=gam(transchange~s(log.ubms, k = 3, bs = "cr")+s(reef_name,bs='re'),dat=Ac,method="REML")
+summary(mod.ac2)##competing model
+
+
+
+##-----------------------------------------------------------------
+##Plot observed total cover change as a function of best predictors
+##-----------------------------------------------------------------
+
+##Ita Ub
+M1=Ac%>%group_by(reef_name)%>%ggplot(aes(x=log.ubms, y=square(transchange)))+
+  geom_point(color="forestgreen",alpha=0.5)+geom_smooth(color="forestgreen",method="gam", formula = y~s(x, k=3, bs="cr"))+labs(y=expression("Relative change in"~italic("Acropora")~"cover"))+theme_classic()+xlab("Log Ita-Ub (m/s)")+ylim(c(-1,8))+theme(legend.position = "top",legend.text = element_text(size=7), axis.text = element_text(size = 7))
+
+##Categorize distance for visualization of interaction
+#distorder=c("<15km", "15-30km","30-45km",">45km")
+distorder=c("<30km",">30km")##simplify visualization and easier interpretation with time of survey in other models
+
+##Distance and nc-Ub  
+Ac%<>%mutate(mindis=NA)%>%
+  mutate(mindis=ifelse(exp(ndist) <=30, "<30km",">30km"))%>%
+  mutate(mindis=factor(mindis, levels=distorder))
+
+
+M2=Ac%>%ggplot(aes(x=nc_ubedmean, y=square(transchange),color=mindis))+geom_point(aes(x=nc_ubedmean, y=square(transchange),color=mindis), alpha=0.4)+viridis::scale_color_viridis(discrete = TRUE, option = "D")+viridis::scale_fill_viridis(discrete = TRUE, option = "D")+ylab("Observed relative change")+theme_classic()+labs(y=expression("Relative change in"~italic("Acropora")~"cover"),x="non-cyclonic Ub")+geom_smooth(method="gam", formula = y~s(x, k=3, bs="cr"))+ylim(c(-1,8))+theme(legend.position = c(0.2,0.9),legend.text = element_text(size=8), axis.text = element_text(size = 7.5))
+
+
+###--------------------------
+##Fit best MOdel (BRA_nACR)
+###--------------------------
+
+top.mod.fits.aic$modname[top.mod.fits.aic$response=="Other Branching"]
+#[1] log.postIta.te.ndist+nc_ubedmean     nc_ubedmean.te.ndist       log.postIta.te.ndist   
+
+Ob=groupdat%>%filter(group=="BRA_nACR")%>%droplevels()
+
+#Best MOd
+mod.ob1=gam(transchange~te(log.postIta, ndist, k = 3, bs = c("cr", "cr"))+s(nc_ubedmean, k = 3, bs = "cr")++s(reef_name,bs='re'), data=Ob,method="REML")
+summary(mod.ob1)
+
+Ob%<>%mutate(mindis=NA)%>%
+  mutate(mindis=ifelse(exp(ndist) <=30, "<30km",">30km"))%>%
+  mutate(mindis=factor(mindis, levels=distorder))%>%
+  mutate(time=NA)%>%
+  mutate(time=ifelse((loginv(log.postIta)/30) <8,"within 8 months", 
+                     ifelse((loginv(log.postIta)/30) > 12 ,"After 12 months","8-12 months")))
+
+Ob$time=ordered(Ob$time,levels=c("within 8 months","8-12 months","After 12 months"))
+
+M3=Ob%>%ggplot(aes(x=nc_ubedmean, y=square(transchange),color=time))+geom_point(aes(x=nc_ubedmean, y=square(transchange),color=time), alpha=0.4)+viridis::scale_color_viridis(discrete = TRUE, option = "D")+viridis::scale_fill_viridis(discrete = TRUE, option = "D")+ylab("Observed relative change")+theme_classic()+labs(y="Relative change in\n Other branching cover",x="non-cyclonic Ub")+geom_smooth(method="gam", formula = y~s(x, k=3, bs="cr"))+ylim(c(-1,4))+facet_wrap(~mindis)+theme(legend.key.size=unit(0.5, "line"),legend.position = c(0.22,0.82),legend.title=element_text(size=7.5),legend.text = element_text(size=6.5), axis.text = element_text(size = 7),axis.title = element_text(size = 10))+guides(color=guide_legend(nrow=3,byrow=TRUE))
+
+
+##---------------------------------
+##Fit best MOdel (PORMASS)
+##---------------------------------
+
+top.mod.fits.aic$formula[top.mod.fits.aic$response=="Porites"]##Competing models 
+##unique: nc_Ub+ te(postita,ndist)
+
+Po=groupdat%>%filter(group=="POR_MASS")%>%droplevels()
+
+# mod.por=gam(transchange~
+#       s(log.postIta, k = 3, bs = "cr")+s(nc_ubedmean, k = 3, bs = "cr") +
+#        + s(ndist, k = 3, bs = "cr"), data=Po,method="REML")##compared mods with ML, for AIC
+
+mod.por=gam(transchange~
+              s(nc_ubedmean, k = 3, bs = "cr") +
+              + te(log.postIta,ndist, k = 3, bs = c("cr","cr"))+s(reef_name,bs='re'), data=Po,method="REML")##Same excluding reefs
+
+
+Po%<>%mutate(mindis=NA)%>%
+  mutate(mindis=ifelse(exp(ndist) <=30, "<30km",">30km"))%>%
+  mutate(time=ifelse((loginv(log.postIta)/30) <8,"within 8 months", 
+                     ifelse((loginv(log.postIta)/30) > 12 ,"After 12 months","8-12 months")))
+Po$time=ordered(Po$time,levels=c("within 8 months","8-12 months","After 12 months"))
+
+
+M4=Po%>%ggplot(aes(x=nc_ubedmean, y=square(transchange),color=time))+geom_point(aes(x=nc_ubedmean, y=square(transchange),color=time), alpha=0.4)+viridis::scale_color_viridis(discrete = TRUE, option = "D")+viridis::scale_fill_viridis(discrete = TRUE, option = "D")+ylab("Observed relative change")+theme_classic()+labs(y=expression('Relative change in'~italic(Porites)~"cover"),x="non-cyclonic Ub")+geom_smooth(method="gam", formula = y~s(x, k=3, bs="cr"))+ylim(c(-1,4))+facet_wrap(~mindis)+theme(legend.key.size=unit(0.5, "line"),legend.position = c(0.22,0.82),legend.title=element_text(size=7.5),legend.text = element_text(size=6.5), axis.text = element_text(size = 7),axis.title = element_text(size = 10))+guides(color=guide_legend(nrow=3,byrow=TRUE))
+
+
+###--------------------------
+##Fit best MOdel (MSE)
+###--------------------------
+
+top.mod.fits.aic$modname[top.mod.fits.aic$response=="MSE"]
+#log.postIta+nc_ubedmean (or interaction)--  non-random effects
+#nc_ubedmean+ndist-rnd model
+
+Mse=groupdat%>%filter(group=="MSE")%>%droplevels()
+
+mod.ms1=gam(transchange~
+              te(nc_ubedmean, ndist, k = 3, bs = c("cr", "cr"))+s(reef_name,bs='re'), data=Mse,method="REML")
+
+
+Mse%<>%mutate(mindis=NA)%>%
+  mutate(mindis=ifelse(exp(ndist) <=30, "<30km",">30km"))%>%##more than 12mo
+  mutate(mindis=factor(mindis, levels=distorder))
+
+M5=Mse%>%ggplot(aes(x=nc_ubedmean, y=square(transchange),color=mindis))+geom_point(aes(x=nc_ubedmean, y=square(transchange),color=mindis), alpha=0.4)+viridis::scale_color_viridis(discrete = TRUE, option = "D")+viridis::scale_fill_viridis(discrete = TRUE, option = "D")+ylab("Observed relative change")+theme_classic()+labs(y="Relative change in MSE cover",x="non-cyclonic Ub")+geom_smooth(method="gam", formula = y~s(x, k=3, bs="cr"))+ylim(c(-1,4))+theme(legend.position = c(0.2,0.9),legend.text = element_text(size=8), axis.text = element_text(size = 7.5))
+
+
+ggarrange(M1,M2,M3,M4,M5, ncol=2, labels = c('a)', 'b)', 'c)','d)','e)'))
+
+```
+
+## Plot cover response Latitudinal variability
+
+```{r}
+#relabel for plot
+groupchange$group<-as.factor(groupchange$group)
+levels(groupchange$group)<-c("Acropora","Other Branching","MSE","Porites massive")
+
+
+g1=ggplot(groupchange, aes(x=Rchange, y=lat,color=Rchange))+geom_point(shape=21,size=1)+
+  geom_jitter(alpha=0.005, width = 0.2)+
+  scale_color_gradientn(colors=c("red", "#7878E6", "blue"), breaks=c(-1,-0.5,0,1,2))+ 
+  geom_vline(xintercept = 0)+ 
+  facet_grid(rows=vars(group))+
+  theme_light()+ylab("Latitude")+xlab("Relative change in percentage cover")+
+  theme(panel.grid.major.x = element_blank(),panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(),panel.grid.minor.y = element_blank(),
+        axis.ticks.x = element_blank(),axis.ticks.y = element_blank(), legend.position = "none")
+
+
+##Average per reef for better visualization
+meanchange=groupchange%>%dplyr::select(-c(transectid,stid))%>%group_by(reef_name, group)%>%  summarise(change=mean(Rchange), lat=mean(lat))
+
+g2=ggplot(meanchange, aes(x=change, y=lat, color=change))+geom_segment(aes(x=0, xend=change, y=lat,yend=lat))+geom_point(size=3)+
+  geom_vline(xintercept = 0)+
+  scale_color_gradientn(colors=c("red", "#7878E6", "blue"), breaks=c(-1,-0.5,0,1,2))+ 
+  facet_grid(rows=vars(group))+theme_light()+ylab("")+xlab("Relative change in percentage cover")+
+  theme(panel.grid.major.x = element_blank(),panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(),panel.grid.minor.y = element_blank(),
+        axis.ticks.x = element_blank(),axis.ticks.y = element_blank(), legend.position = "none")
+
+##Create Map
+mapchange=ita_ndf
+coordinates(mapchange)=~lng+lat
+#crop map area using the whole latitudinal extent of the study
+sw.b=extent(mapchange@bbox[1]-1,mapchange@bbox[3]+0.5,mapchange@bbox[2]-0.5, mapchange@bbox[4]+0.5)
+land1 <- gSimplify(land, tol = 0.00001)
+land.sub <- crop(land1, sw.b)
+
+#Extract only coordinates of cyclone path
+trackp=track[c(3,2)]#LONG and LAT
+
+mln=(max(ita_ndf$lng))
+mlt=min(ita_ndf$lat)
+mlt2=max(ita_ndf$lat)
+
+trackp%<>%filter(LON < mln)%>%filter(LAT > mlt & LAT < mlt2)
+
+ditch_the_axes <- theme(
+  axis.text = element_blank(),
+  axis.line = element_blank(),
+  axis.ticks = element_blank(),
+  panel.border = element_blank(),
+  panel.grid = element_blank(),
+  axis.title = element_blank()
+)
+
+
+
+totmap=ggplot(ita_ndf, aes(x=lng,y=lat))+
+  geom_polygon(data =land.sub,aes(group = group, x = long, y = lat),colour="grey", fill=NA,alpha=0.9)+
+  geom_point(data=ita_ndf, aes(colour=Rchange), size=2,shape=21)+##changed from 4 for insets
+  scale_color_gradientn(colors=c("red", "#7878E6", "blue"), breaks=c(-1,-0.5,0,1,2))+ 
+  theme_classic()+
+  ylab("Latitude")+xlab("Longitude")+labs(color="Relative change\nin total cover")+
+  coord_equal()+
+  geom_path(trackp, mapping=aes(x=LON, y=LAT), color="black", alpha=0.3, size=2, lineend="round")+##Add Ita Track
+  #coord_map(orientation = c(55,0,0))+
+  theme_classic()+ditch_the_axes+
+  theme(legend.position= c(0.4,0.5), 
+        legend.background = element_rect(fill="transparent",size=8), 
+        plot.title = element_text(hjust=0.5,size = 10, face = "bold"),legend.title=element_text())
+
+#---------
+##Figure 3
+#---------
+
+ggarrange(totmap,g1,g2, ncol=3,labels= c('a)','b)','c)'))
+
+```
+
+
+
+##Explore Reef-level cover change per group (Appendix Figure S2)
+
+```{r}
+
+##Greater and more frequent losses for PORMASS, MSE, Other Branching
+ggplot(groupchange, aes(x=reef_name, y=Rchange, fill=group))+geom_boxplot()+
+  facet_grid(rows=vars(group))+theme(axis.text.x = element_text(angle=45,hjust=1), legend.position = "none")+geom_hline(yintercept = 0, color="red", linetype="dashed")+xlab("reef")+ylab("Relative change in % cover")+scale_fill_brewer(palette="Dark2")
+#ggsave(file="Outputs/pergroupchange_figS2.jpeg",width = 7, height = 8, units = c("in"),dpi = 300)
+
+```
+
+
+
+
