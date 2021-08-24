@@ -258,8 +258,7 @@ ggarrange(f1,f2, nrow=1, labels=c('a)','b)'))
 plot(residuals.gam(mod)~usedat$reef_name)#OK
 
 ##check data spatially
-land <- readOGR(dsn="C:/Users/uqccastr/Dropbox/GBRMPA_Data", layer="Great_Barrier_Reef_Features")	
-crs(land)
+
 spatdat=ita_ndf%>%dplyr::select(c(17,18,3))%>%droplevels()
 sp::coordinates(spatdat)<-~lat+lng##convert to spatial df
 crs(spatdat)<- CRS("+init=epsg:3857") ##
@@ -619,7 +618,13 @@ g2=ggplot(meanchange, aes(x=change, y=lat, color=change))+geom_segment(aes(x=0, 
         panel.grid.minor.x = element_blank(),panel.grid.minor.y = element_blank(),
         axis.ticks.x = element_blank(),axis.ticks.y = element_blank(), legend.position = "none")
 
+##-------------
 ##Create Map
+##-------------
+
+land <- readOGR(dsn="C:/Users/uqccastr/Dropbox/GBRMPA_Data", layer="Great_Barrier_Reef_Features")	
+crs(land)
+
 mapchange=ita_ndf
 coordinates(mapchange)=~lng+lat
 #crop map area using the whole latitudinal extent of the study
