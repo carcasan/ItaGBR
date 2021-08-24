@@ -622,6 +622,7 @@ g2=ggplot(meanchange, aes(x=change, y=lat, color=change))+geom_segment(aes(x=0, 
 ##Create Map
 ##-------------
 
+##Download spatial layers from: http://www.gbrmpa.gov.au/geoportal/catalog/main/home.page
 land <- readOGR(dsn="C:/Users/uqccastr/Dropbox/GBRMPA_Data", layer="Great_Barrier_Reef_Features")	
 crs(land)
 
